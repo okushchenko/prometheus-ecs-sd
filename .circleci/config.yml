@@ -2,7 +2,7 @@
 version: 2
 jobs:
   build:
-    working_directory: /go/src/github.com/{{ORG_NAME}}/{{REPO_NAME}}
+    working_directory: /go/src/github.com/okushchenko/prometheus-ecs-sd
     docker:
       - image: circleci/golang:1.9
     steps:
