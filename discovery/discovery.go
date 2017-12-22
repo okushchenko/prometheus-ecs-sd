@@ -154,10 +154,6 @@ func (ed *ECSDiscovery) refresh() (*[]TargetGroup, error) {
 					log.Fatal(err)
 				}
 				for _, container := range task.Containers {
-					// Skip containers with no exposed ports or not in a RUNNING status
-					if len(container.NetworkBindings) == 0 || *container.LastStatus != "RUNNING" {
-						continue
-					}
 					wg.Add(1)
 					go func(
 						container *ecs.Container, task *ecs.Task, service *string,
@@ -172,7 +168,9 @@ func (ed *ECSDiscovery) refresh() (*[]TargetGroup, error) {
 
 	go func() {
 		for targetGroup := range out {
-			targetGroups = append(targetGroups, targetGroup)
+			if len(targetGroup.Targets) > 0 {
+				targetGroups = append(targetGroups, targetGroup)
+			}
 		}
 	}()
 
@@ -189,25 +187,40 @@ func processContainer(
 	cluster *ecs.Cluster,
 	ec2Instance *ec2.Instance,
 	taskDefinition *ecs.TaskDefinition) *TargetGroup {
-	targetGroup := &TargetGroup{
-		Labels: map[string]string{
-			ecsServiceLabel:   *service,
-			ecsClusterLabel:   *cluster.ClusterName,
-			ecsContainerLabel: *container.Name,
-			ecsTaskLabel:      *container.TaskArn,
-			ecsInstanceLabel:  *ec2Instance.InstanceId,
-			ecsVersionLabel:   strconv.FormatInt(*task.Version, 10),
-		},
-		Targets: []string{fmt.Sprintf(
-			"%s:%d",
-			*ec2Instance.PrivateIpAddress,
-			*container.NetworkBindings[0].HostPort)},
+	targetGroup := &TargetGroup{}
+	// Skip containers with no exposed ports or not in a RUNNING status
+	if *container.LastStatus != "RUNNING" || *taskDefinition.NetworkMode == "none" {
+		return targetGroup
 	}
-
 	for _, containerDefinition := range taskDefinition.ContainerDefinitions {
 		if *containerDefinition.Name == *container.Name {
+			if len(containerDefinition.PortMappings) == 0 {
+				return targetGroup
+			}
+			var port *int64
+			if *taskDefinition.NetworkMode == "bridge" {
+				port = container.NetworkBindings[0].HostPort
+			} else if *taskDefinition.NetworkMode == "host" {
+				port = containerDefinition.PortMappings[0].HostPort
+			} else {
+				log.Warnf("Unrecognized NetworkMode %s, skipping", taskDefinition.NetworkMode)
+				return targetGroup
+			}
+			targetGroup.Labels = map[string]string{
+				ecsServiceLabel:   *service,
+				ecsClusterLabel:   *cluster.ClusterName,
+				ecsContainerLabel: *container.Name,
+				ecsTaskLabel:      *container.TaskArn,
+				ecsInstanceLabel:  *ec2Instance.InstanceId,
+				ecsVersionLabel:   strconv.FormatInt(*task.Version, 10),
+			}
 			for k, v := range containerDefinition.DockerLabels {
 				targetGroup.Labels[strutil.SanitizeLabelName(ecsLabelPrefix+k)] = *v
+			}
+			targetGroup.Targets = []string{fmt.Sprintf(
+				"%s:%d",
+				*ec2Instance.PrivateIpAddress,
+				*port),
 			}
 		}
 	}
