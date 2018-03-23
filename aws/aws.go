@@ -12,6 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ecs"
 )
 
+const DescribeTasksChunkSize = 100
+
 type AWS struct {
 	ecsService *ecs.ECS
 	ec2Service *ec2.EC2
@@ -169,19 +171,31 @@ func (aws *AWS) GetTasks(cluster *ecs.Cluster) (tasks []*ecs.Task, err error) {
 		return !lastPage
 	})
 	if err != nil {
-		return nil, fmt.Errorf("error listing ECS tasks: %s", err)
+		return tasks, fmt.Errorf("error listing ECS tasks: %s", err)
 	}
 
 	if len(taskArns) == 0 {
 		return
 	}
 
-	taskDescriptionsResponse, err := aws.ecsService.DescribeTasks(&ecs.DescribeTasksInput{
-		Cluster: cluster.ClusterArn,
-		Tasks:   taskArns,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("error describing ECS tasks: %s", err)
+	var taskArnsChunks [][]*string
+	for i := 0; i <= len(taskArns); i += DescribeTasksChunkSize {
+		end := i + DescribeTasksChunkSize
+		if end > len(taskArns) {
+			end = len(taskArns)
+		}
+		taskArnsChunks = append(taskArnsChunks, taskArns[i:end])
 	}
-	return taskDescriptionsResponse.Tasks, nil
+
+	for _, taskArnsChunk := range taskArnsChunks {
+		taskDescriptionsResponse, err := aws.ecsService.DescribeTasks(&ecs.DescribeTasksInput{
+			Cluster: cluster.ClusterArn,
+			Tasks:   taskArnsChunk,
+		})
+		if err != nil {
+			return tasks, fmt.Errorf("error describing ECS tasks: %s", err)
+		}
+		tasks = append(tasks, taskDescriptionsResponse.Tasks...)
+	}
+	return tasks, nil
 }
